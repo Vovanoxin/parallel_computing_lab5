@@ -1,134 +1,109 @@
-use std::convert::Infallible;
+extern crate pretty_env_logger;
+#[macro_use] extern crate log;
+
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use futures::SinkExt;
-use hyper::{header, upgrade, StatusCode, Body, Request, Response, Server, server::conn::AddrStream};
-use hyper::service::{make_service_fn, service_fn};
-use tokio_tungstenite::WebSocketStream;
-use tungstenite::{handshake, Error, Message};
-use futures::stream::StreamExt;
-use hyper::upgrade::Upgraded;
+use futures::{SinkExt, StreamExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio_tungstenite::{accept_async, tungstenite::Error};
+use tungstenite::{Message, Result};
+use tokio::sync::broadcast;
+use tokio::sync::broadcast::{Sender, Receiver};
+use tokio::{select};
+use std::fs;
+use serde::{Serialize, Deserialize};
 
-struct WebSocketClient {
-    request: Request<Body>,
-    remote_addr: SocketAddr,
+#[derive(Copy, Clone)]
+enum BroadcastMSG {
+    LabsChanged,
 }
 
-impl WebSocketClient {
-    fn new(request: Request<Body>, remote_addr: SocketAddr) -> WebSocketClient {
-        WebSocketClient {
-            request,
-            remote_addr
-        }
-    }
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "command")]
+enum WebSockJSONMsg {
+    getLabs,
+    takeLab{id: usize},
+}
 
-    async fn handle_messages(self, upgraded: Upgraded) {
-        println!("waiting for stream");
-        let ws_stream = WebSocketStream::from_raw_socket(
-            upgraded,
-            tungstenite::protocol::Role::Server,
-            None,
-        ).await;
-        println!("waiting for msgs");
-        let (mut ws_write, mut ws_read) = ws_stream.split();
 
-        while let Some(msg) = ws_read.next().await {
-            println!("Got msg: {:?}", msg);
-            match msg {
-                Ok(msg) => {
-                    ws_write.send(Message::Text("Hello from server".to_owned())).await.unwrap();
-                }
-                Err(Error::ConnectionClosed) => println!("Connection closed normally"),
-                Err(e) =>
-                    println!("error creating echo stream. Error is {}", e),
-            }
+async fn accept_connection(peer: SocketAddr, stream: TcpStream, labs: Arc<Mutex<Vec<Lab>>>, tx: Sender<BroadcastMSG>, mut rx: Receiver<BroadcastMSG>) {
+    if let Err(e) = handle_connection(peer, stream, labs, tx, rx).await {
+        match e {
+            Error::ConnectionClosed | Error::Protocol(_) | Error::Utf8 => (),
+            err => error!("Error processing connection: {}", err),
         }
     }
 }
 
-struct WebSocketServer {
-    clients: Arc<Mutex<Vec<WebSocketClient>>>,
-}
+async fn handle_connection(peer: SocketAddr, stream: TcpStream, labs: Arc<Mutex<Vec<Lab>>>, tx: Sender<BroadcastMSG>, mut rx: Receiver<BroadcastMSG>) -> Result<()> {
+    let mut ws_stream = accept_async(stream).await.expect("Failed to accept");
 
-impl WebSocketServer {
+    info!("New WebSocket connection: {}", peer);
 
-}
-
-
-
-fn handle_ws_connection(mut ws_client: WebSocketClient) -> Result<Response<Body>, Infallible> {
-    let response =
-        match handshake::server::create_response_with_body(&ws_client.request, || Body::empty()) {
-            Ok(response) => {
-                tokio::spawn(async move {
-                    match upgrade::on(&mut ws_client.request).await {
-                        Ok(upgraded) => {
-                            println!("Connection upgraded");
-                            ws_client.handle_messages(upgraded).await;
-                        },
-                        Err(e) =>
-                            println!("error when trying to upgrade connection. \
-                                        Error is: {}", e),
+    loop {
+        select! {
+            maybe_msg = ws_stream.next() => {
+                if let Some(msg) = maybe_msg {
+                    let msg = msg?;
+                    match msg.to_text().unwrap_or`("") {
+                        _ => {
+                            ws_stream.send(tungstenite::Message::Text(format!("Echo msg: {}", msg))).await;
+                            info!("Got msg: {}", msg);
+                            tx.send(BroadcastMSG::LabsChanged);
+                            continue;
+                        }
                     }
-                });
-                response
-            },
-            Err(error) => {
-                println!("Failed to create websocket response \
-                                Error is: {}", error);
-                let mut res = Response::new(Body::from(format!("Failed to create websocket: {}", error)));
-                *res.status_mut() = StatusCode::BAD_REQUEST;
-                return Ok(res);
+                } else {
+                    break;
+                }
             }
-        };
 
-    Ok::<_, Infallible>(response)
-}
-
-async fn handle_request(mut request: Request<Body>,
-                        remote_addr: SocketAddr,
-                        arc: Arc<SharedState>) -> Result<Response<Body>, Infallible> {
-    match (request.uri().path(), request.headers().contains_key(header::UPGRADE)) {
-        ("/ws_echo", true) => {
-            println!("Handling ws request");
-            handle_ws_connection(WebSocketClient::new(request, remote_addr))
-
-        },
-        (url@_, false) => {
-            Ok(Response::new(Body::default()))
-        },
-        (_, true) => {
-            Ok(Response::new(Body::default()))
+            maybe_broadcast_msg = rx.recv() => {
+                let broadcast_msg: BroadcastMSG = maybe_broadcast_msg.unwrap();
+                match broadcast_msg {
+                    BroadcastMSG::LabsChanged => {
+                        ws_stream.send(tungstenite::Message::Text(format!("Got lab changed"))).await;
+                        info!("Got LabsChanged");
+                    }
+                };
+            }
         }
     }
+
+    Ok(())
 }
 
-struct SharedState {
-    ws_clients: Arc<Mutex<Vec<WebSocketClient>>>
+struct SharedData {
+    labs: Arc<Mutex<Vec<Lab>>>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct Lab {
+    title: String,
+    description: String,
+    #[serde(skip_deserializing,skip_serializing)]
+    taken: bool,
 }
 
 #[tokio::main]
 async fn main() {
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
-    println!("Listening on {} for http or websocket connections.", addr);
+    pretty_env_logger::init();
 
-    let shared_state = Arc::new(SharedState{ws_clients:Arc::new(Mutex::new(Vec::new()))});
+    // read labs from labs.json
+    let labs_data = fs::read_to_string("labs.json").expect("Unable to read labs.json");
+    let labs: Arc<Mutex<Vec<Lab>>> = Arc::new(Mutex::new(serde_json::from_str(&labs_data).unwrap()));
 
-    let make_svc = make_service_fn(|conn: & AddrStream| {
-        let remote_addr = conn.remote_addr();
-        let shared_state = shared_state.clone();
-        async move {
-            // service_fn converts our function into a `Service`
-            Ok::<_, Infallible>(service_fn(move |request: Request<Body>|
-                handle_request(request, remote_addr, shared_state.clone())
-            ))
-        }
-    });
+    let addr = "127.0.0.1:3000";
+    let listener = TcpListener::bind(&addr).await.expect("Can't listen");
+    info!("Listening on: {}", addr);
 
-    let server = Server::bind(&addr).serve(make_svc);
+    let (tx, _) = broadcast::channel(512);
 
-    // Run this server for... forever!
-    if let Err(e) = server.await {
-        eprintln!("server error: {}", e);
+    while let Ok((stream, _)) = listener.accept().await {
+        let peer = stream.peer_addr().expect("connected streams should have a peer address");
+        info!("Peer address: {}", peer);
+
+        tokio::spawn(accept_connection(peer, stream, labs.clone(), tx.clone(), tx.subscribe()));
     }
 }
