@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Title</title>
+
+    <style>
+        .page {
+            margin: 20px auto;
+            max-width: 1440px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        #root {
+            margin: 0 auto;
+            width: 100%;
+            display: flex;
+            justify-content: space-around;
+            flex-wrap: wrap;
+        }
+
+        .lab-card {
+            box-shadow: rgba(66, 66, 66, 0.58) 4px 4px 10px;
+            margin: 10px 20px;
+            padding: 10px;
+            min-width: 180px;
+            max-width: 180px;
+        }
+
+        .lab-id {
+            margin: 0;
+        }
+
+        .lab-id::before {
+            content: 'ID: ';
+        }
+
+        #lab_id {
+            font-size: 14px;
+            box-sizing: border-box;
+            max-height: 40px;
+            min-width: 180px;
+            margin: 0;
+            padding: 10px;
+            outline-color: black;
+        }
+
+        #reserve_button {
+            height: 40px;
+            min-width: 120px;
+            padding: 10px;
+            background: #000;
+            color: #FFF;
+            border: none;
+            border-radius: 2px;
+        }
+
+        #lab-select_form {
+            margin: 30px 0 0 0;
+        }
+    </style>
+</head>
+<body class="page" onload="onLoad()">
+    <div id="root"></div>
+    <form id="lab-select_form">
+        <input id="lab_id" type="number" min="0" placeholder="lab id">
+        <button id="reserve_button" type="submit">Reserve</button>
+    </form>
+
+    <script>
+        function onLoad(){
+            let socket = new WebSocket("ws://localhost:3000");
+            document.getElementById("reserve_button").addEventListener("click", (event) => {
+                event.preventDefault();
+                const request = `{"command":"takeLab", "id":${document.getElementById("lab_id").value}}`;
+                socket.send(request);
+            });
+
+            socket.onmessage = function(event) {
+                let msg = JSON.parse(event.data);
+                if(msg.hasOwnProperty("info")) {
+                    if (msg.info === "labsChanged") {
+                        socket.send('{"command":"getLabs"}');
+                        return;
+                    }
+                    console.log(msg)
+                    alert(`Got msg: ${msg.info}`)
+                    return;
+                }
+                console.log(msg);
+                const root = document.getElementById("root");
+                root.replaceChildren();
+                msg.map((value, _)=>{
+                    const new_lab = document.createElement("div");
+                    const lab_id = document.createElement("p");
+                    const lab_title = document.createElement("p");
+                    const lab_description = document.createElement("p");
+
+                    // add classes for styling
+                    new_lab.classList.add('lab-card');
+                    lab_id.classList.add('lab-id');
+                    lab_title.classList.add('lab-title');
+                    lab_description.classList.add('lab-description');
+
+                    // add element values
+                    lab_id.innerText = value.id;
+                    lab_title.innerText = value.title;
+                    lab_description.innerText = value.description;
+                    new_lab.append(lab_id, lab_title, lab_description);
+                    root.append(new_lab);
+                });
+
+            };
+
+            socket.onclose = function(event) {
+                alert("Connection was closed");
+            }
+
+            socket.onopen = function(event) {
+                socket.send('{"command":"getLabs"}');
+            }
+
+        }
+    </script>
+</body>
+</html>

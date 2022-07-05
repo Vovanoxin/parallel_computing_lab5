@@ -1,5 +1,9 @@
 [
   {
+    "title": "Lab0 title",
+    "description": "Lab0 description"
+  },
+  {
     "title": "Lab1 title",
     "description": "Lab1 description"
   },
@@ -12,11 +16,27 @@
     "description": "Lab3 description"
   },
   {
-    "title": "Lab3 title",
-    "description": "Lab3 description"
+    "title": "Lab4 title",
+    "description": "Lab4 description"
   },
   {
-    "title": "Lab3 title",
-    "description": "Lab3 description"
+    "title": "Lab5 title",
+    "description": "Lab5 description"
+  },
+  {
+    "title": "Lab6 title",
+    "description": "Lab6 description"
+  },
+  {
+    "title": "Lab7 title",
+    "description": "Lab7 description"
+  },
+  {
+    "title": "Lab8 title",
+    "description": "Lab8 description"
+  },
+  {
+    "title": "Lab9 title",
+    "description": "Lab9 description"
   }
 ]
